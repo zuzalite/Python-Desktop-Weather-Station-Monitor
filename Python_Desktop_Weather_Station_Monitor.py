@@ -3,22 +3,41 @@ import requests
 from datetime import datetime
 from collections import deque
 
-# --- THINGSPEAK SETTINGS ---
+# ==============================================================================
+# --- FELHASZNÁLÓI BEÁLLÍTÁSOK (KONFIGURÁCIÓ) ---
+# ==============================================================================
+# HÁLÓZATI ÉS API BEÁLLÍTÁSOK
 CHANNEL_NUMBER = "xxxxxxx"
-READ_API_KEY = "xxxxxxxxxxxx"
+READ_API_KEY = "xxxxxxxxxxxxxxxx"
+
+# METEOROLÓGIAI KÜSZÖBÉRTÉKEK (A TRÉNING ALAPJÁN FINOMHANGOLHATÓ)
+STORM_THRESHOLD       = -1.8    # Viharjelzés küszöbérték (hPa / 5 perc) -> pl. -4.20
+BAD_WEATHER_THRESHOLD = -1.1    # Általános időjárás-romlás küszöb (hPa / 60 perc)
+SEASONAL_OFFSET       = 0.3     # Szezonális eltolás mértéke (nyáron -0.3, télen +0.3)
+WIND_OFFSET_NW        = 0.5     # Északnyugati szél enyhítési szorzója
+
+# ABSZOLÚT NYOMÁSI ZÓNÁK (hPa)
+PRESSURE_EXTREME_HIGH = 1035.0  # Extrém anticiklon határ
+PRESSURE_STANDARD_MID = 1013.0  # Standard tengerszinti alapérték
+PRESSURE_EXTREME_LOW  = 995.0   # Extrém mély ciklon határ
+
+# IDŐZÍTÉSEK ÉS MATEMATIKAI ABLAKOK (EZREDMÁSODPERCBEN - MS)
+UPDATE_INTERVAL_MS    = 60000   # ThingSpeak adatletöltési gyakoriság (60 másodperc)
+SCREEN_1_DURATION_MS  = 7000    # 1. képernyő (Alapadatok) láthatósága
+SCREEN_2_DURATION_MS  = 4000    # 2. képernyő (Előrejelzés) láthatósága
+MA_WINDOW             = 5       # Szenzorzaj-szűrés mozgóátlag ablaka (elem)
+# ==============================================================================
 
 # --- GLOBAL VARIABLES ---
 in_temp = 0.0
 out_temp = 0.0
 pressure = 0.0
 
-# JAVÍTVA: Matematikailag pontos méretű gördülő sorok (deque) használata.
-# A 61 elem biztosítja, hogy a 60. (legfrissebb) és a 0. (legrégebbi) index között pontosan 60 perc teljen el.
+# 61 elem biztosítja az 1 órás ablakot
 pressure_history = deque([0.0] * 61, maxlen=61)
 pressure_ma = deque([0.0] * 61, maxlen=61)
 temp_in_history = deque([0.0] * 11, maxlen=11)
 temp_out_history = deque([0.0] * 11, maxlen=11)
-MA_WINDOW = 3
 
 current_wind_dir = "N"
 is_barometric_crash = False
@@ -43,13 +62,13 @@ def fetch_wind_direction():
             wind_deg = data["current_weather"]["winddirection"]
             
             if 337.5 <= wind_deg or wind_deg < 22.5:       current_wind_dir = "N"
-            elif 22.5 <= wind_deg and wind_deg < 67.5:   current_wind_dir = "NE"
-            elif 67.5 <= wind_deg and wind_deg < 112.5:  current_wind_dir = "E"
-            elif 112.5 <= wind_deg and wind_deg < 157.5: current_wind_dir = "SE"
-            elif 157.5 <= wind_deg and wind_deg < 202.5: current_wind_dir = "S"
-            elif 202.5 <= wind_deg and wind_deg < 247.5: current_wind_dir = "SW"
-            elif 247.5 <= wind_deg and wind_deg < 292.5: current_wind_dir = "W"
-            else:                                        current_wind_dir = "NW"
+            elif 22.5 <= wind_deg and wind_deg < 67.5:     current_wind_dir = "NE"
+            elif 67.5 <= wind_deg and wind_deg < 112.5:    current_wind_dir = "E"
+            elif 112.5 <= wind_deg and wind_deg < 157.5:   current_wind_dir = "SE"
+            elif 157.5 <= wind_deg and wind_deg < 202.5:   current_wind_dir = "S"
+            elif 202.5 <= wind_deg and wind_deg < 247.5:   current_wind_dir = "SW"
+            elif 247.5 <= wind_deg and wind_deg < 292.5:   current_wind_dir = "W"
+            else:                                          current_wind_dir = "NW"
             return "OK"
     except:
         pass
@@ -91,24 +110,18 @@ def fetch_latest_data():
                     out_temp = float(str(data_f5["field5"]).replace(',', '.'))
                     has_any_data = True
 
-        if has_any_data:
-            return "OK"
-        else:
-            return "NODATA"
-            
+        return "OK" if has_any_data else "NODATA"
     except Exception as e:
-        print(f"Hiba részletei: {e}")
         return "CONN_ERR"
 
 def update_local_history():
     global history_ready, is_barometric_crash
     
-    # JAVÍTVA: A dequek automatikusan eldobják a régi elemet az append hatására
     temp_in_history.append(in_temp)
     temp_out_history.append(out_temp)
     pressure_history.append(pressure)
 
-    # JAVÍTVA: Mozgóátlag számítása az utolsó 3 elemre a 61 elemű sorban (58, 59, 60. indexek)
+    # Mozgóátlag számítása
     sum_p = 0.0
     count = 0
     for i in range(61 - MA_WINDOW, 61):
@@ -119,16 +132,14 @@ def update_local_history():
     ma_val = sum_p / count if count > 0 else pressure
     pressure_ma.append(ma_val)
 
-    # JAVÍTVA: Barometric crash pontosan 5 perces ablakban (60. index vs 55. index)
+    # KALIBRÁLVA: Barometric crash a megadott STORM_THRESHOLD-ra a 5 perces ablakban
     short_trend = pressure_ma[60] - pressure_ma[55]
-    is_barometric_crash = (short_trend <= -0.7 and pressure_ma[55] > 950.0)
+    is_barometric_crash = (short_trend <= STORM_THRESHOLD and pressure_ma[55] > 950.0)
 
-    # Inicializációs ellenőrzés
     valid = sum(1 for p in pressure_history if p > 950.0)
     if valid >= MA_WINDOW:
         history_ready = True
 
-# JAVÍTVA: Bevezetve a változó küszöbérték (threshold), hogy külön lehessen választani a nyomás és hőmérséklet érzékenységét
 def get_trend_char(current, past, threshold):
     if past == 0.0: return '-'
     delta = current - past
@@ -137,30 +148,32 @@ def get_trend_char(current, past, threshold):
     return '-'
 
 def get_forecast_text():
-    # JAVÍTVA: Index igazítása 60-ra
+    # KALIBRÁLVA: Fix határértékek és szélirány büntetés enyhítése
     if not history_ready or pressure_ma[60] < 950.0: return "COLLECTING..."
     if is_barometric_crash: return "STORM WARNING"
     
     p = pressure_ma[60]
-    # JAVÍTVA: Pontosan 1 órás időablak különbsége (60. index - 0. index)
     raw_trend = pressure_ma[60] - pressure_ma[0]
     wind_mod = 0
     
+    # Enyhített NW büntetés (0.5 szorzó alkalmazása a konfigurációból)
     if current_wind_dir in ["S", "SW", "SE"]: wind_mod = 2
     elif current_wind_dir in ["W", "E"]:      wind_mod = 1
+    elif current_wind_dir in ["NW"]:          wind_mod = WIND_OFFSET_NW 
     
     trend = raw_trend - (wind_mod * 0.4)
-    seasonal_factor = -0.3 if is_summer else 0.3
+    seasonal_factor = -SEASONAL_OFFSET if is_summer else SEASONAL_OFFSET
     
-    if trend <= -1.5 + seasonal_factor: return "STORMY RAIN" if p < 1005 else "RAIN/WEATHER"
-    if trend <= -0.6: return "BAD WEATHER"
-    if trend >= 1.2 + seasonal_factor: return "SUNNY/CLEAR"
-    if trend >= 0.5: return "SLOW IMPROV."
+    # Viharos trendek
+    if trend <= STORM_THRESHOLD + seasonal_factor: return "STORMY RAIN" if p < 1005 else "RAIN/WEATHER"
+    if trend <= BAD_WEATHER_THRESHOLD: return "BAD WEATHER"
     
-    if p >= 1020: return "STABLE SUNNY"
-    if p >= 1013: return "SUNNY/DRY" if is_summer else "CLOUDY/DRY"
-    if p >= 1005: return "CLOUDY/STAB."
-    return "LOW/CLOUDY"
+    # Fix nyomás alapú állapotok (Kalibrált határértékek a konfigurációból)
+    if p >= PRESSURE_EXTREME_HIGH: return "STABLE SUNNY"
+    if p >= PRESSURE_STANDARD_MID: return "SUNNY/DRY" if is_summer else "CLOUDY/DRY"
+    if p <= PRESSURE_EXTREME_LOW:  return "LOW / HEAVY STORM"
+    
+    return "STABLE/FAIR"
 
 # --- TIMERS & UI UPDATES ---
 
@@ -171,26 +184,23 @@ def network_update_loop():
     fetch_wind_direction()
     update_season()
     update_display()
-    root.after(60000, network_update_loop)
+    root.after(UPDATE_INTERVAL_MS, network_update_loop)
 
 def screen_switch_loop():
     global current_screen
     if current_screen == 1:
         current_screen = 2
-        delay = 4000
+        delay = SCREEN_2_DURATION_MS
     else:
         current_screen = 1
-        delay = 7000
+        delay = SCREEN_1_DURATION_MS
     update_display()
     root.after(delay, screen_switch_loop)
 
 def update_display():
     if current_screen == 1:
-        # JAVÍTVA: Pontos 10 perces delta a hőmérsékleteknél (10. index - 0. index) 0.20 °C küszöbbel
         trend_in = get_trend_char(in_temp, temp_in_history[0], 0.20)
         trend_out = get_trend_char(out_temp, temp_out_history[0], 0.20)
-        
-        # JAVÍTVA: Pontos 10 perces delta a légnyomásnál a simított adatokból (60. index - 50. index) 0.10 hPa küszöbbel
         trend_p = get_trend_char(pressure_ma[60], pressure_ma[50], 0.10)
         
         diff = in_temp - out_temp
@@ -231,7 +241,6 @@ def boot_sequence():
     lbl_display.config(text=f"--- SYSTEM START ---\n\nOpen-Meteo: {om_status}\nThingSpeak: {ts_status}\n\n> All ready!")
     root.update()
     
-    # JAVÍTVA: Sorok feltöltése és inicializálása az új méretekkel (11 és 61)
     temp_in_history = deque([in_temp] * 11, maxlen=11)
     temp_out_history = deque([out_temp] * 11, maxlen=11)
     pressure_history = deque([pressure] * 61, maxlen=61)
@@ -241,8 +250,8 @@ def boot_sequence():
 
 def start_loops():
     update_display()
-    root.after(60000, network_update_loop)
-    root.after(7000, screen_switch_loop)
+    root.after(UPDATE_INTERVAL_MS, network_update_loop)
+    root.after(SCREEN_1_DURATION_MS, screen_switch_loop)
 
 # --- GUI SETUP ---
 root = tk.Tk()
