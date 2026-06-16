@@ -3,6 +3,10 @@
 
 A lightweight, asynchronous desktop GUI application built in Python using `tkinter`. This application acts as a dedicated monitoring station, fetching live indoor and outdoor environmental telemetry from a ThingSpeak channel, retrieving real-time wind vectors from the Open-Meteo API, and displaying a mathematically optimized 1-hour meteorological forecast.
 
+
+Use with this tuning program:
+https://github.com/zuzalite/Thingspeak_weather_tuner_Version1
+
 ---
 
 ## Features & Software Architecture
